@@ -354,5 +354,5 @@ def game(policy, episode_length):
         # if int(now) % 10 == 0 :
         cv2.waitKey(int(1000/FPS))
 
-from result import policy
-game(policy,1000)
+# from result import policy
+# game(policy,1000)

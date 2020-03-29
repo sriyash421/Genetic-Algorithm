@@ -3,8 +3,12 @@ import matplotlib.pyplot as plt
 import multiprocessing
 import time
 import random
-from math import sqrt, ceil
+from math import sqrt, ceil, floor
+from mpi4py import MPI
+import pickle
 
+comm = MPI.COMM_WORLD
+pid = comm.Get_rank()
 
 class GeneticAlgortithmNN():
 
@@ -29,7 +33,7 @@ class GeneticAlgortithmNN():
         self.mutRate = mutRate
         self.all_fitness = []
         self.parents_score = 0.0
-        print(multiprocessing.cpu_count())
+        # print(multiprocessing.cpu_count())
         '''
         Random initialisation of policy
         Policy : list of matrices 
@@ -47,8 +51,8 @@ class GeneticAlgortithmNN():
                 policy.append(temp)
 
             self.population.append(policy)
-
-        print("Class Initialised\n", self.par_size)
+        if pid == 0 :
+            print("Class Initialised\n", self.par_size)
         # x = input()
 
     def calc_fitness(self):
@@ -57,8 +61,9 @@ class GeneticAlgortithmNN():
         '''
 
         self.generation += 1
-        print("Generation : {}".format(self.generation))
-        print("\nCalculating Fitness\n")
+        if pid == 0 :
+            print("Generation : {}".format(self.generation))
+            print("\nCalculating Fitness\n")
 
         fitness_list = []
         policy_list = []
@@ -66,18 +71,38 @@ class GeneticAlgortithmNN():
             policy = self.population[i]
             policy_list.append(policy)
 
-        p = multiprocessing.Pool(8)#multiprocessing.cpu_count()+1)
-        fitness = p.map(self.fitness_func, policy_list)
-        p.close()
-        p.join()
+        num_proc = comm.Get_size()
+        chunk_size = int(len(policy_list)/num_proc)
+        if pid == 0 :
+            for i in range(1,num_proc-1) :
+                comm.Send(np.array([i*chunk_size,(i+1)*chunk_size]), dest=i)
+            comm.Send(np.array(list([(num_proc-1)*chunk_size,len(policy_list)])),dest=num_proc-1)
 
-        for i in range(self.pop_size):
-            fitness_list.append((fitness[i], policy_list[i]))
-            self.all_fitness.append(fitness_list[i])
-
-        return fitness_list
+            fitness = []
+            for i in range(chunk_size) :
+                fitness.append(self.fitness_func(policy_list[i]))
+            
+            for i in range(1,num_proc-1) :
+                data = np.zeros(chunk_size)
+                comm.Recv(data, source=i)
+                fitness.extend(list(data))
+            data = np.zeros(len(policy_list)-(num_proc-1)*chunk_size)
+            comm.Recv(data, source=num_proc-1)
+            fitness.extend(list(data))
+        else :
+            data = np.zeros(2)
+            comm.Recv(data, source=0)
+            temp = policy_list[data[0]:data[1]]
+            fitness_temp = []
+            for policy in temp :
+                fitness_temp.append(self.fitness_func(policy))
+            comm.Send(fitness_temp, dest=0)
+            fitness_list = []
+        comm.Bcast(fitness_list, root=0)
+        return pickle.load(temp)
 
     def show(self):
+        return
         '''
         Function to plot graph of fitness vs iteration
         '''
@@ -90,8 +115,8 @@ class GeneticAlgortithmNN():
         time.sleep(1)
 
         fitness = self.fitness_func(self.best_policy, True)
-
-        print("Best Fitness : {} \n {} \n".format(fitness, self.best_policy))
+        if pid == 0 :
+            print("Best Fitness : {} \n {} \n".format(fitness, self.best_policy))
 
         time.sleep(1)
 
@@ -147,8 +172,8 @@ class GeneticAlgortithmNN():
             randR = int(randR_*(rows-1))  # np.random.randint(0, rows-1)
             randC = int(randC_*(cols-1))  # np.random.randint(0, cols-1)
 
-            tempA = np.empty((rows, cols))
-            tempB = np.empty((rows, cols))
+            tempA = np.zeros((rows, cols))
+            tempB = np.zeros((rows, cols))
 
             for j in range(rows):
                 for k in range(cols):
