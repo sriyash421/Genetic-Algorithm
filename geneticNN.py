@@ -9,6 +9,7 @@ import pickle
 
 comm = MPI.COMM_WORLD
 pid = comm.Get_rank()
+print("pid=",pid)
 
 class GeneticAlgortithmNN():
 
@@ -39,21 +40,26 @@ class GeneticAlgortithmNN():
         Policy : list of matrices 
         Population : list of policies
         '''
-        for i in range(self.pop_size):
-            policy = []
-            for j in range(num_layers-1):
-                # print(num_nodes[j+1])
-                temp = np.random.uniform(size=(
-                    num_nodes[j+1], num_nodes[j]), low=self.policy_range[0], high=self.policy_range[1])
-                
-                # temp += temp_policy[j]
-                # temp = np.clip(temp,-1,1)
-                policy.append(temp)
-
-            self.population.append(policy)
+        self.population = None
         if pid == 0 :
-            print("Class Initialised\n", self.par_size)
+            self.population = []
+            for i in range(self.pop_size):
+                policy = []
+                for j in range(num_layers-1):
+                    # print(num_nodes[j+1])
+                    temp = np.random.uniform(size=(
+                        num_nodes[j+1], num_nodes[j]), low=self.policy_range[0], high=self.policy_range[1])
+                    
+                    # temp += temp_policy[j]
+                    # temp = np.clip(temp,-1,1)
+                    policy.append(temp)
+
+                self.population.append(policy)
+        self.population = comm.bcast(self.population, root=0)
         # x = input()
+
+        if pid == 0:
+             print("Class Initialised\n", self.par_size)
 
     def calc_fitness(self):
         '''
@@ -74,22 +80,37 @@ class GeneticAlgortithmNN():
         size = comm.Get_size()
         chunk_size = int(len(policy_list)/size)
         buffer = None
+
         if pid == 0:
             buffer = [[i*chunk_size,(i+1)*chunk_size] for i in range(size-1)]
             buffer.append([(size-1)*chunk_size,len(policy_list)])
             buffer = np.asmatrix(buffer)
+        
         index = np.empty(2, dtype=np.int)
         comm.Scatter([buffer,MPI.INT], [index, MPI.INT], root=0)
-        fitness = np.zeros(int(index[1]-index[0]))
+        
+        fitness = []
         for i in range(index[0],index[1]) :
-            fitness[i-index[0]] = self.fitness_func(policy_list[i])
-        buffer = np.empty(self.pop_size)
+            fitness.append(self.fitness_func(policy_list[i]))
+        if pid == size - 1 :
+            fitness.extend([0]*(chunk_size-len(fitness)))
         fitness = np.asarray(fitness)
-        comm.Allgather([fitness,MPI.DOUBLE],[buffer, MPI.DOUBLE])
+        
+        buffer = None
+        temp = comm.allgather(fitness,buffer)
+        
+        fitness = []
+        for i in temp :
+            fitness.extend(list(i))
+        fitness = fitness[:self.pop_size]
+        assert(len(fitness)==self.pop_size)
+        
         fitness_list = []
         for i in range(self.pop_size):
-            fitness_list.append((buffer[i], policy_list[i]))
-            self.all_fitness.append(fitness_list[i])
+            fitness_list.append((fitness[i], policy_list[i]))
+            self.all_fitness.append(fitness[i])
+        assert(len(fitness_list)==self.pop_size)
+        
         return fitness_list
 
 
@@ -129,6 +150,7 @@ class GeneticAlgortithmNN():
             self.best_fitness = fitness_list[0][0]
             self.parents_score = sum([x[0] for x in parents])
             self.write_to_file()
+            print("\n Best Fitness : {}\n".format(self.best_fitness))
         
         comm.bcast(parents, root=0)
 
@@ -221,7 +243,7 @@ class GeneticAlgortithmNN():
                 offsprings.append(child1)
                 offsprings.append(child2)
             
-        comm.bcast(offsprings, root=0)
+        offsprings = comm.bcast(offsprings, root=0)
         return offsprings
 
     def mutation(self, offsprings):
@@ -241,7 +263,7 @@ class GeneticAlgortithmNN():
 
                     offsprings[i][j] = np.clip(
                         offsprings[i][j], self.policy_range[0], self.policy_range[1], out=offsprings[i][j])
-        comm.Bcast(offsprings, root=0)
+        offsprings = comm.bcast(offsprings, root=0)
         return offsprings
 
     def update_population(self, offsprings):
