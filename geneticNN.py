@@ -71,70 +71,66 @@ class GeneticAlgortithmNN():
             policy = self.population[i]
             policy_list.append(policy)
 
-        num_proc = comm.Get_size()
-        chunk_size = int(len(policy_list)/num_proc)
-        if pid == 0 :
-            for i in range(1,num_proc-1) :
-                comm.Send(np.array([i*chunk_size,(i+1)*chunk_size]), dest=i)
-            comm.Send(np.array(list([(num_proc-1)*chunk_size,len(policy_list)])),dest=num_proc-1)
+        size = comm.Get_size()
+        chunk_size = int(len(policy_list)/size)
+        buffer = None
+        if pid == 0:
+            buffer = [[i*chunk_size,(i+1)*chunk_size] for i in range(size-1)]
+            buffer.append([(size-1)*chunk_size,len(policy_list)])
+            buffer = np.asmatrix(buffer)
+        index = np.empty(2, dtype=np.int)
+        comm.Scatter([buffer,MPI.INT], [index, MPI.INT], root=0)
+        fitness = np.zeros(int(index[1]-index[0]))
+        for i in range(index[0],index[1]) :
+            fitness[i-index[0]] = self.fitness_func(policy_list[i])
+        buffer = np.empty(self.pop_size)
+        fitness = np.asarray(fitness)
+        comm.Allgather([fitness,MPI.DOUBLE],[buffer, MPI.DOUBLE])
+        fitness_list = []
+        for i in range(self.pop_size):
+            fitness_list.append((buffer[i], policy_list[i]))
+            self.all_fitness.append(fitness_list[i])
+        return fitness_list
 
-            fitness = []
-            for i in range(chunk_size) :
-                fitness.append(self.fitness_func(policy_list[i]))
-            
-            for i in range(1,num_proc-1) :
-                data = np.zeros(chunk_size)
-                comm.Recv(data, source=i)
-                fitness.extend(list(data))
-            data = np.zeros(len(policy_list)-(num_proc-1)*chunk_size)
-            comm.Recv(data, source=num_proc-1)
-            fitness.extend(list(data))
-        else :
-            data = np.zeros(2)
-            comm.Recv(data, source=0)
-            temp = policy_list[data[0]:data[1]]
-            fitness_temp = []
-            for policy in temp :
-                fitness_temp.append(self.fitness_func(policy))
-            comm.Send(fitness_temp, dest=0)
-            fitness_list = []
-        comm.Bcast(fitness_list, root=0)
-        return pickle.load(temp)
 
-    def show(self):
-        return
-        '''
-        Function to plot graph of fitness vs iteration
-        '''
-        plt.figure()
-        plt.plot(self.all_fitness)
-        plt.xlabel("generation")
-        plt.ylabel("fitness")
-        plt.show()
+    # def show(self):
+    #     return
+    #     '''
+    #     Function to plot graph of fitness vs iteration
+    #     '''
+    #     plt.figure()
+    #     plt.plot(self.all_fitness)
+    #     plt.xlabel("generation")
+    #     plt.ylabel("fitness")
+    #     plt.show()
 
-        time.sleep(1)
+    #     time.sleep(1)
 
-        fitness = self.fitness_func(self.best_policy, True)
-        if pid == 0 :
-            print("Best Fitness : {} \n {} \n".format(fitness, self.best_policy))
+    #     fitness = self.fitness_func(self.best_policy, True)
+    #     if pid == 0 :
+    #         print("Best Fitness : {} \n {} \n".format(fitness, self.best_policy))
 
-        time.sleep(1)
+    #     time.sleep(1)
 
     def select_mating_pool(self, fitness_list):
         '''
         Select best parents based on fitness values
         '''
+        parents = None
         # print("\nSelect Mating\n")
-        fitness_list = sorted(fitness_list, key=lambda x: x[0], reverse=True)
-        parents = []
+        if pid == 0 :
+            fitness_list = sorted(fitness_list, key=lambda x: x[0], reverse=True)
+            parents = []
 
-        for i in range(self.par_size):
-            parents.append(fitness_list[i])
+            for i in range(self.par_size):
+                parents.append(fitness_list[i])
 
-        self.best_policy = fitness_list[0][1]
-        self.best_fitness = fitness_list[0][0]
-        self.parents_score = sum([x[0] for x in parents])
-        self.write_to_file()
+            self.best_policy = fitness_list[0][1]
+            self.best_fitness = fitness_list[0][0]
+            self.parents_score = sum([x[0] for x in parents])
+            self.write_to_file()
+        
+        comm.bcast(parents, root=0)
 
         # self.show()
 
@@ -200,8 +196,7 @@ class GeneticAlgortithmNN():
     def crossover(self, parents):
 
         # print("\nCrossing\n")
-        offsprings = []
-
+        offsprings = None
         # for i in range(0, len(parents)):
         #     for j in range(i, len(parents)):
         # '''
@@ -213,16 +208,20 @@ class GeneticAlgortithmNN():
         '''
         Selecting parents using roulette selection
         '''
-        for i in range(ceil(self.pop_size/2)):
-            pick = random.uniform(0, self.parents_score)
-            parent1 = self.roulette_selection(pick, parents)
-            pick = random.uniform(0, self.parents_score)
-            parent2 = self.roulette_selection(pick, parents)
+        
+        if pid == 0:
+            offsprings = []
+            for i in range(int(ceil(self.pop_size/2))):
+                pick = random.uniform(0, self.parents_score)
+                parent1 = self.roulette_selection(pick, parents)
+                pick = random.uniform(0, self.parents_score)
+                parent2 = self.roulette_selection(pick, parents)
 
-            child1, child2 = self.cross_policy(parent1, parent2)
-            offsprings.append(child1)
-            offsprings.append(child2)
-
+                child1, child2 = self.cross_policy(parent1, parent2)
+                offsprings.append(child1)
+                offsprings.append(child2)
+            
+        comm.bcast(offsprings, root=0)
         return offsprings
 
     def mutation(self, offsprings):
@@ -230,19 +229,19 @@ class GeneticAlgortithmNN():
         Mutating the offsprings
         '''
         # print("\nMutation\n")
+        if pid == 0 :
+            for i in range(len(offsprings)):
+                for j in range(len(offsprings[i])):
 
-        for i in range(len(offsprings)):
-            for j in range(len(offsprings[i])):
+                    random_weight = np.random.uniform(size=(
+                        offsprings[i][j].shape[0], offsprings[i][j].shape[1]), low=self.policy_range[0], high=self.policy_range[1])
+                    random_choice = np.random.choice([0, 1], size=offsprings[i][j].shape, p=[
+                        1-self.mutRate, self.mutRate])
+                    offsprings[i][j] += np.multiply(random_choice, random_weight)
 
-                random_weight = np.random.uniform(size=(
-                    offsprings[i][j].shape[0], offsprings[i][j].shape[1]), low=self.policy_range[0], high=self.policy_range[1])
-                random_choice = np.random.choice([0, 1], size=offsprings[i][j].shape, p=[
-                    1-self.mutRate, self.mutRate])
-                offsprings[i][j] += np.multiply(random_choice, random_weight)
-
-                offsprings[i][j] = np.clip(
-                    offsprings[i][j], self.policy_range[0], self.policy_range[1], out=offsprings[i][j])
-
+                    offsprings[i][j] = np.clip(
+                        offsprings[i][j], self.policy_range[0], self.policy_range[1], out=offsprings[i][j])
+        comm.Bcast(offsprings, root=0)
         return offsprings
 
     def update_population(self, offsprings):
